@@ -1,5 +1,5 @@
 import streamlit as st
-import easyocr
+import pytesseract
 import cv2
 import numpy as np
 import re
@@ -10,41 +10,19 @@ st.set_page_config(page_title="Catering Report Calculator", layout="centered")
 st.title("📋 Catering Sheet Calculator")
 st.write("Upload a sheet image or take a photo to compute totals automatically.")
 
-@st.cache_resource
-def load_ocr():
-    return easyocr.Reader(['en'], gpu=False)
-
-reader = load_ocr()
-
 HOT_MEAL_CODES = {"BUTERC", "VBY", "CBY", "CHANA", "JAINVG", "RAJMA", "CPASTA", "CPOP"}
 HOT_MEAL_KEYWORDS = ["RICE", "BIRYANI", "CURRY", "MASALA", "PARATHA", "PASTA", "MAC AND CHEESE"]
 
 def process_image(pil_img):
     img = np.array(pil_img)
-    results = reader.readtext(img)
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     
-    # Sort boxes top to bottom
-    sorted_boxes = sorted(results, key=lambda x: x[0][0][1])
+    # Preprocessing to sharpen text
+    gray = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)[1]
     
-    lines = []
-    current_line = []
-    current_y = -1
-    threshold = 15
-    
-    for bbox, text, _ in sorted_boxes:
-        y_center = (bbox[0][1] + bbox[2][1]) / 2
-        if current_y == -1 or abs(y_center - current_y) < threshold:
-            current_line.append((bbox[0][0], text))
-            current_y = y_center
-        else:
-            current_line.sort(key=lambda x: x[0])
-            lines.append(" | ".join([t[1] for t in current_line]))
-            current_line = [(bbox[0][0], text)]
-            current_y = y_center
-            
-    if current_line:
-        current_line.sort(key=lambda x: x[0])
-        lines.append(" | ".join([t[1] for t in current_line]))
+    # Extract text with layout structure
+    text = pytesseract.image_to_string(gray, config="--psm 6")
+    lines = text.splitlines()
 
     total_qty = 0
     total_hot_cutlery = 0
@@ -54,14 +32,16 @@ def process_image(pil_img):
     
     for line in lines:
         upper = line.upper()
-        if "T3L" in upper:
+        
+        # Check if line contains a catering entry
+        if "T3L" in upper or any(code in upper for code in HOT_MEAL_CODES):
             qty_match = re.findall(r'\b\d+\b', line)
             if not qty_match:
                 continue
             
             qty = int(qty_match[-1])
             
-            # Check if Hot Meal
+            # Identify Hot Meals
             is_hot = any(code in upper for code in HOT_MEAL_CODES) or \
                      (any(k in upper for k in HOT_MEAL_KEYWORDS) and not any(sw in upper for sw in ["SANDWICH", "SW", "CROISSANT"]))
             
@@ -86,7 +66,7 @@ def process_image(pil_img):
     }
 
 # File Upload / Camera Input
-uploaded_file = st.file_uploader("Choose an image...", type=["jpg", "jpeg", "png"])
+uploaded_file = st.file_uploader("Choose an image or take a photo...", type=["jpg", "jpeg", "png"])
 
 if uploaded_file is not None:
     image = Image.open(uploaded_file)
@@ -97,7 +77,6 @@ if uploaded_file is not None:
     
     st.success("Calculation Complete!")
     
-    # Display Results in clean metric cards
     col1, col2 = st.columns(2)
     with col1:
         st.metric("Total Items", results["Total Count (All Items)"])
@@ -106,4 +85,3 @@ if uploaded_file is not None:
     with col2:
         st.metric("Paper Trays (Hot Meals)", results["Paper Tray / Plates (Hot Meals Only)"])
         st.metric("Yoghurt (Biryani)", results["Yoghurt (VBY & CBY Only)"])
-
